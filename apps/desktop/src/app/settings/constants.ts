@@ -240,9 +240,31 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'context.engine': ['compressor', 'default', 'custom'],
   'delegation.reasoning_effort': ['', 'minimal', 'low', 'medium', 'high', 'xhigh'],
   'memory.provider': ['', 'builtin', 'honcho'],
+  // Terminal execution backends — kept in sync with the dispatch ladder in
+  // tools/terminal_tool.py::_create_environment (local/docker/singularity/
+  // modal/daytona/ssh). Remote backends need extra env (image, tokens, host).
+  'terminal.backend': ['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'],
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3'],
+  // Speech-to-text backends — kept in sync with the stt block in
+  // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
+  'stt.provider': ['local', 'groq', 'openai', 'mistral', 'elevenlabs'],
   'tts.openai.voice': ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'],
+  // Text-to-speech backends — kept in sync with the built-in source of truth
+  // (agent/tts_registry.py::_BUILTIN_NAMES / tools/tts_tool.py::
+  // BUILTIN_TTS_PROVIDERS). 'xai' is Grok TTS.
+  'tts.provider': [
+    'edge',
+    'elevenlabs',
+    'openai',
+    'xai',
+    'minimax',
+    'mistral',
+    'gemini',
+    'neutts',
+    'kittentts',
+    'piper'
+  ],
   'updates.non_interactive_local_changes': ['stash', 'discard']
 }
 
