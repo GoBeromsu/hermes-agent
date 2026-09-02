@@ -593,10 +593,11 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
         for i, line in enumerate(lines, start=1):
             if (pid, i) in seen:
                 continue
-            if re.search(pattern, line, re.IGNORECASE):
+            match = re.search(pattern, line, re.IGNORECASE)
+            if match:
                 if _is_code_comment(line, file_path):
                     continue
-                if _is_negated_prose(line, file_path, category):
+                if _is_negated_prose(line, file_path, category, match.start()):
                     continue
                 if pid in {"agent_config_mod", "hermes_config_mod", "other_agent_config"} and _is_benign_config_reference(line):
                     continue
@@ -1096,17 +1097,33 @@ def _cap_noninstructional_severity(severity: str, rel_path: Path) -> str:
     return severity
 
 
-def _is_negated_prose(line: str, file_path: Path, category: str) -> bool:
-    """Recognize prohibitions in documentation, never in executable code."""
+def _is_negated_prose(line: str, file_path: Path, category: str, match_start: int) -> bool:
+    """Recognize prohibitions in documentation, never in executable code.
+
+    The prohibition must govern the matched span: it has to appear before the match and
+    must not be cancelled by an intervening verb ("never forget to X" instructs X).
+    """
     if file_path.suffix.lower() not in {".md", ".txt"}:
         return False
     if category not in {"exfiltration", "privilege_escalation", "persistence"}:
         return False
-    return bool(re.search(
+
+    preceding = line[:match_start]
+    negation = None
+    for candidate in re.finditer(
         r"(?:^|\b)(?:do not|never|don't|must not|금지|하지 마|no\b.{0,80}\ballowed\b)",
-        line,
+        preceding,
         re.IGNORECASE,
-    ))
+    ):
+        negation = candidate
+    if negation is None:
+        return False
+
+    # "never forget to", "do not skip", "do not omit" re-assert the action.
+    between = preceding[negation.end():]
+    if re.search(r"\b(?:forget|skip|omit|fail|neglect|hesitate|miss|avoid missing)\b", between, re.IGNORECASE):
+        return False
+    return True
 
 
 def _is_code_comment(line: str, file_path: Path) -> bool:
