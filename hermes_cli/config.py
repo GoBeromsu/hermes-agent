@@ -1753,6 +1753,9 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Operator-reviewed skill publishers. These sources may install
+        # caution verdicts, but dangerous verdicts remain blocked.
+        "trusted_repos": [],
     },
 
     # Curator — background skill maintenance.

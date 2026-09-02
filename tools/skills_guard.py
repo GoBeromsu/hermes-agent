@@ -22,6 +22,7 @@ Usage:
         print(format_scan_report(result))
 """
 
+import ast
 import re
 import fnmatch
 import hashlib
@@ -152,12 +153,12 @@ THREAT_PATTERNS = [
     # lookahead exempts `os.environ.get("<name>")` only when <name> is NOT a
     # secret-shaped identifier — `os.environ.get("OPENAI_API_KEY")` still trips
     # via the dedicated secret pattern just below.
-    (r'os\.environ\b(?!\s*\.get\s*\(\s*["\'](?![^"\']*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)))',
+    (r'os\.environ\b(?!\s*(?:\[|\.get\s*\(\s*["\'](?![^"\']*(?:API_?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL))))',
      "python_os_environ", "high", "exfiltration",
      "accesses os.environ (potential env dump)"),
-    (r'os\.environ\s*\.get\s*\(\s*["\'][^"\']*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)',
+    (r'os\.environ\s*(?:\.get\s*\(|\[)\s*["\'][^"\']*(?:API_?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)',
      "python_environ_get_secret", "critical", "exfiltration",
-     "reads secret via os.environ.get()"),
+     "reads secret via os.environ"),
     (r'os\.getenv\s*\(\s*[^\)]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)',
      "python_getenv_secret", "critical", "exfiltration",
      "reads secret via os.getenv()"),
@@ -585,19 +586,30 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     lines = content.split('\n')
     seen = set()  # (pattern_id, line_number) for deduplication
 
+    string_context_lines = _python_help_or_docstring_lines(file_path, content)
+
     # Regex pattern matching
     for pattern, pid, severity, category, description in THREAT_PATTERNS:
         for i, line in enumerate(lines, start=1):
             if (pid, i) in seen:
                 continue
-            if re.search(pattern, line, re.IGNORECASE):
+            match = re.search(pattern, line, re.IGNORECASE)
+            if match:
+                if _is_code_comment(line, file_path):
+                    continue
+                if _is_negated_prose(line, file_path, category, match.start()):
+                    continue
+                if pid in {"agent_config_mod", "hermes_config_mod", "other_agent_config"} and _is_benign_config_reference(line):
+                    continue
+                if pid.startswith("path_traversal") and i in string_context_lines:
+                    continue
                 seen.add((pid, i))
                 matched_text = line.strip()
                 if len(matched_text) > 120:
                     matched_text = matched_text[:117] + "..."
                 findings.append(Finding(
                     pattern_id=pid,
-                    severity=severity,
+                    severity=_cap_noninstructional_severity(severity, Path(rel_path)),
                     category=category,
                     file=rel_path,
                     line=i,
@@ -1055,10 +1067,100 @@ def _resolve_trust_level(source: str) -> str:
         return "builtin"
     # Check if source matches any trusted repo exactly, or a skill path inside
     # that repo. Do not trust sibling repositories that merely share a prefix.
-    for trusted in TRUSTED_REPOS:
+    for trusted in TRUSTED_REPOS | _configured_trusted_repos():
         if normalized_source == trusted or normalized_source.startswith(f"{trusted}/"):
             return "trusted"
     return "community"
+
+
+def _configured_trusted_repos() -> set[str]:
+    """Return operator-reviewed skill repositories from the Hermes config."""
+    try:
+        from hermes_cli.config import load_config
+
+        skills_config = load_config().get("skills", {})
+        repos = skills_config.get("trusted_repos", []) if isinstance(skills_config, dict) else []
+    except Exception:
+        return set()
+    return {repo for repo in repos if isinstance(repo, str) and repo}
+
+
+def _cap_noninstructional_severity(severity: str, rel_path: Path) -> str:
+    """Keep changelog and test findings visible without treating them as instructions."""
+    is_test = (
+        "tests" in rel_path.parts
+        or rel_path.name.startswith("test_")
+        or rel_path.name.endswith("_harness.py")
+    )
+    if rel_path.name == "CHANGELOG.md" or is_test:
+        return {"critical": "medium", "high": "medium"}.get(severity, severity)
+    return severity
+
+
+def _is_negated_prose(line: str, file_path: Path, category: str, match_start: int) -> bool:
+    """Recognize prohibitions in documentation, never in executable code.
+
+    The prohibition must govern the matched span: it has to appear before the match and
+    must not be cancelled by an intervening verb ("never forget to X" instructs X).
+    """
+    if file_path.suffix.lower() not in {".md", ".txt"}:
+        return False
+    if category not in {"exfiltration", "privilege_escalation", "persistence"}:
+        return False
+
+    preceding = line[:match_start]
+    negation = None
+    for candidate in re.finditer(
+        r"(?:^|\b)(?:do not|never|don't|must not|금지|하지 마|no\b.{0,80}\ballowed\b)",
+        preceding,
+        re.IGNORECASE,
+    ):
+        negation = candidate
+    if negation is None:
+        return False
+
+    # "never forget to", "do not skip", "do not omit" re-assert the action.
+    between = preceding[negation.end():]
+    if re.search(r"\b(?:forget|skip|omit|fail|neglect|hesitate|miss|avoid missing)\b", between, re.IGNORECASE):
+        return False
+    return True
+
+
+def _is_code_comment(line: str, file_path: Path) -> bool:
+    """Ignore non-executing comments in script sources."""
+    if file_path.suffix.lower() not in {".py", ".sh", ".bash", ".js", ".ts", ".rb"}:
+        return False
+    return line.lstrip().startswith("#")
+
+
+def _is_benign_config_reference(line: str) -> bool:
+    """A config filename alone is not evidence that the skill changes it."""
+    return not re.search(
+        r"\b(?:append|configure|create|edit|modify|overwrite|replace|set|update|write)\b",
+        line,
+        re.IGNORECASE,
+    )
+
+
+def _python_help_or_docstring_lines(file_path: Path, content: str) -> set[int]:
+    """Return Python source lines occupied by argparse help or docstrings."""
+    if file_path.suffix.lower() != ".py":
+        return set()
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return set()
+
+    lines = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            docstring = ast.get_docstring(node, clean=False)
+            if docstring and node.body and isinstance(node.body[0], ast.Expr):
+                value = node.body[0].value
+                lines.update(range(value.lineno, value.end_lineno + 1))
+        elif isinstance(node, ast.keyword) and node.arg == "help" and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            lines.update(range(node.value.lineno, node.value.end_lineno + 1))
+    return lines
 
 
 def _determine_verdict(findings: List[Finding]) -> str:

@@ -533,6 +533,21 @@ skills:
 
 When on, any flagged `skill_manage` write surfaces as an approval prompt with the scanner's rationale. Accepted writes land; denied writes return an explanatory error to the agent.
 
+### Trusted skill repositories
+
+Repositories are community sources by default. After reviewing a publisher's
+skills, an operator can allow its `safe` and `caution` verdicts by listing the
+repository under `skills.trusted_repos`:
+
+```yaml
+skills:
+  trusted_repos:
+    - owner/repository
+```
+
+This does not allow dangerous skills: a `dangerous` verdict is always blocked,
+including with `--force`.
+
 ## Memory Configuration
 
 ```yaml
