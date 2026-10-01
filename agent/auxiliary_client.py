@@ -7254,11 +7254,16 @@ def _resolve_call_client(
             api_key=resolved_api_key or api_key, async_mode=async_mode, main_runtime=main_runtime,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
-            logger.warning("Vision provider %s unavailable, falling back to auto vision backends",
-                           resolved_provider)
-            effective_provider, client, final_model = resolve_vision_provider_client(
-                provider="auto", model=resolved_model, async_mode=async_mode,
-                main_runtime=main_runtime)
+            client, final_model, effective_provider = _try_configured_fallback_for_unavailable_client(
+                task, resolved_provider)
+            if client is not None and async_mode:
+                client, final_model = _to_async_client(client, final_model or "", is_vision=True)
+            if client is None:
+                logger.warning("Vision provider %s unavailable, falling back to auto vision backends",
+                               resolved_provider)
+                # Do not re-read the failed provider's configured model through task resolution.
+                effective_provider, client, final_model = _vision_auto_route(
+                    _normalize_main_runtime(main_runtime), None, None, async_mode)
         if client is not None:
             resolved_provider = effective_provider or resolved_provider
     else:
