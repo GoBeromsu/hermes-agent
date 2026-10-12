@@ -7428,11 +7428,9 @@ def _resolve_call_client(
             api_key=resolved_api_key or api_key, async_mode=async_mode, main_runtime=main_runtime,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
-            logger.warning("Vision provider %s unavailable, falling back to auto vision backends",
-                           resolved_provider)
-            effective_provider, client, final_model = resolve_vision_provider_client(
-                provider="auto", model=resolved_model, async_mode=async_mode,
-                main_runtime=main_runtime)
+            from agent.auxiliary_vision_unavailable import fallback_for_unavailable_vision
+            effective_provider, client, final_model = fallback_for_unavailable_vision(
+                task, resolved_provider, main_runtime, async_mode)
         if client is not None:
             resolved_provider = effective_provider or resolved_provider
     else:
