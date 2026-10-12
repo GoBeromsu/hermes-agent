@@ -29,6 +29,7 @@ import os
 import shutil
 import sys
 import tempfile
+from unittest.mock import MagicMock
 
 import pytest
 from tools import browser_tool_install as bt_install
@@ -181,6 +182,13 @@ model:
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
         _fresh_modules()
 
+        # Pin the catalog answer: this test is about a KNOWN text-only main. A live catalog
+        # with no deepseek entry yields None → permissive (test_unknown_capability_does_not_block).
+        from agent import auxiliary_client as aux, image_routing
+        monkeypatch.setattr(image_routing, "_lookup_supports_vision",
+                            lambda provider, model, *a, **k: False if provider == "deepseek" else None)
+        monkeypatch.setattr(aux, "_resolve_strict_vision_backend", lambda *a, **k: (None, None))
+
         from agent.auxiliary_client import resolve_vision_provider_client
         provider, client, _model = resolve_vision_provider_client(provider="auto")
         assert client is None, (
@@ -199,10 +207,16 @@ model:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         _fresh_modules()
 
+        # Fake only the optional-SDK boundary; provider selection stays real.
+        built = []
+        monkeypatch.setattr("agent.anthropic_adapter.build_anthropic_client",
+                            lambda api_key, base_url=None, *a, **k: built.append(api_key) or MagicMock())
+
         from agent.auxiliary_client import resolve_vision_provider_client
         provider, client, _model = resolve_vision_provider_client(provider="auto")
         assert client is not None
         assert provider == "anthropic"
+        assert built == ["sk-ant-test"]
 
     def test_unknown_capability_does_not_block(self, isolated_home, monkeypatch):
         """When models.dev has no entry, fall back to permissive (attempt the call).
